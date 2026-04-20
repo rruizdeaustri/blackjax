@@ -997,7 +997,8 @@ class HamiltonianNSTest(chex.TestCase):
         state = jax.jit(sampler.init)(positions)
         step_fn = jax.jit(sampler.step)
 
-        for i in range(5):
+        num_test_steps = 5
+        for i in range(num_test_steps):
             rng_key, subkey = jax.random.split(rng_key)
             state, info = step_fn(subkey, state)
             self.assertFalse(

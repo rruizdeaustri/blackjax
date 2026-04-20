@@ -83,8 +83,11 @@ __all__ = [
 # Module-level constants
 # -----------------------------------------------------------------------
 
-# Numerical floor added to ||grad|| in the denominator to avoid NaN in the
-# inactive branch of jnp.where (which traces both sides).
+# Threshold below which ||grad|| is treated as zero (no reliable normal vector).
+_GRAD_NORM_THRESHOLD: float = 1e-10
+
+# Numerical floor added to ||grad|| denominator to avoid division by zero
+# in the inactive branch of jnp.where (which traces both sides).
 _GRAD_NORM_EPS: float = 1e-30
 
 # Default initial leapfrog step size.
@@ -235,8 +238,8 @@ def hamiltonian_reflection_step(
         # --- likelihood-surface reflection: v' = v - 2*(v·n)*n ---
         norm_grad = jnp.linalg.norm(grad)
         normal = jnp.where(
-            norm_grad > 1e-10,
-            grad / (norm_grad + _GRAD_NORM_EPS),   # +eps avoids NaN in inactive branch
+            norm_grad > _GRAD_NORM_THRESHOLD,
+            grad / (norm_grad + _GRAD_NORM_EPS),   # +eps avoids division by zero
             jnp.zeros_like(grad),
         )
         vel_ll = vel - 2.0 * jnp.dot(vel, normal) * normal

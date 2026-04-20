@@ -18,6 +18,14 @@ Requirements: blackjax, jax, scipy (optional, for comparison).
 
 import time
 
+try:
+    import numpy as np
+    from scipy.special import erf
+
+    _SCIPY_AVAILABLE = True
+except ImportError:
+    _SCIPY_AVAILABLE = False
+
 import jax
 import jax.numpy as jnp
 
@@ -37,16 +45,15 @@ SIGMA = 1.0
 
 # Analytic log-evidence:
 #   Z = integral_{[-5,5]^2} (1/10)^2 * N(x; 0, I) dx
-#   ~ (1/10)^2 * (2*pi) * [erf(5/sqrt(2))]^2
-try:
-    from scipy.special import erf
-    import numpy as np
+#   ~ (1/10)^2 * (2*pi*sigma^2)^(d/2) * [erf(5/(sigma*sqrt(2)))]^d
+#   where (2*pi*sigma^2)^(d/2) is the Gaussian normalising constant
+if _SCIPY_AVAILABLE:
     prior_prob = (1.0 / 10.0) ** NDIM
     # (2 * pi * sigma^2)^(d/2) is the Gaussian normalising constant
     factor = (2.0 * np.pi * SIGMA**2) ** (NDIM / 2.0)
     p_in = erf(5.0 / (SIGMA * np.sqrt(2))) ** NDIM
-    ANALYTIC_LOG_Z = float(np.log(prior_prob * factor * p_in))
-except ImportError:
+    ANALYTIC_LOG_Z: float = float(np.log(prior_prob * factor * p_in))
+else:
     ANALYTIC_LOG_Z = None
 
 
