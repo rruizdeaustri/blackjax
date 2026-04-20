@@ -42,6 +42,7 @@ try:
     from scipy.special import erf
     import numpy as np
     prior_prob = (1.0 / 10.0) ** NDIM
+    # (2 * pi * sigma^2)^(d/2) is the Gaussian normalising constant
     factor = (2.0 * np.pi * SIGMA**2) ** (NDIM / 2.0)
     p_in = erf(5.0 / (SIGMA * np.sqrt(2))) ** NDIM
     ANALYTIC_LOG_Z = float(np.log(prior_prob * factor * p_in))

@@ -79,6 +79,27 @@ __all__ = [
     "update_inner_kernel_params",
 ]
 
+# -----------------------------------------------------------------------
+# Module-level constants
+# -----------------------------------------------------------------------
+
+# Numerical floor added to ||grad|| in the denominator to avoid NaN in the
+# inactive branch of jnp.where (which traces both sides).
+_GRAD_NORM_EPS: float = 1e-30
+
+# Default initial leapfrog step size.
+_DEFAULT_DT: float = 1e-2
+
+# dt adaptation thresholds and scale factors (from GGNS).
+# out_frac > _OUT_FRAC_HIGH  →  step is too large, shrink dt.
+# out_frac < _OUT_FRAC_LOW   →  step is too small, grow dt.
+_OUT_FRAC_HIGH: float = 0.15
+_OUT_FRAC_LOW: float = 0.05
+_DT_SHRINK: float = 0.9
+_DT_GROW: float = 1.1
+_DT_MIN: float = 1e-5
+_DT_MAX: float = 10.0
+
 
 class HamiltonianInfo(NamedTuple):
     """Per-step information returned by the Hamiltonian trajectory sampler.
@@ -215,7 +236,7 @@ def hamiltonian_reflection_step(
         norm_grad = jnp.linalg.norm(grad)
         normal = jnp.where(
             norm_grad > 1e-10,
-            grad / (norm_grad + 1e-30),   # +eps avoids NaN in inactive branch
+            grad / (norm_grad + _GRAD_NORM_EPS),   # +eps avoids NaN in inactive branch
             jnp.zeros_like(grad),
         )
         vel_ll = vel - 2.0 * jnp.dot(vel, normal) * normal
@@ -335,7 +356,7 @@ def update_inner_kernel_params(
     dict
         Updated ``{'dt': new_dt}``.
     """
-    dt = inner_kernel_params.get("dt", jnp.array(1e-2))
+    dt = inner_kernel_params.get("dt", jnp.array(_DEFAULT_DT))
 
     if info is None:
         return {"dt": dt}
@@ -346,9 +367,9 @@ def update_inner_kernel_params(
     ham_infos = info.update_info
     out_frac = jnp.mean(ham_infos.out_frac)
 
-    dt = jnp.where(out_frac > 0.15, dt * 0.9, dt)
-    dt = jnp.where(out_frac < 0.05, dt * 1.1, dt)
-    dt = jnp.clip(dt, 1e-5, 10.0)
+    dt = jnp.where(out_frac > _OUT_FRAC_HIGH, dt * _DT_SHRINK, dt)
+    dt = jnp.where(out_frac < _OUT_FRAC_LOW, dt * _DT_GROW, dt)
+    dt = jnp.clip(dt, _DT_MIN, _DT_MAX)
     return {"dt": dt}
 
 
@@ -406,7 +427,7 @@ def as_top_level_api(
     loglikelihood_fn: Callable,
     num_inner_steps: int,
     num_delete: int = 1,
-    dt_ini: float = 1e-2,
+    dt_ini: float = _DEFAULT_DT,
     min_reflections: int = 2,
     max_reflections: int = 10,
     sigma_vel: float = 0.0,
