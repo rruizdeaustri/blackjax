@@ -26,19 +26,25 @@ Available modules:
 - `adaptive`: Implements Adaptive Nested Sampling, combining SMC tempering
 - `nss`: Implements Nested Slice Sampling, using Hit-and-Run Slice Sampling as
          the inner kernel with adaptive tuning of its proposal mechanism.
+- `dynamic_nss`: Thin wrapper around `nss` that exposes the dynamic NS regime
+                 (``num_delete > 1``) as a first-class API.
+- `hamiltonian`: Gradient-guided Hamiltonian Nested Sampling using likelihood
+                 surface reflections.
 - `integrator`: Provides NSIntegrator for tracking evidence integration.
 - `utils`: Contains utility functions for processing and analyzing Nested
            Sampling results.
 - `from_mcmc`: Utilities to build Nested Sampling algorithms from MCMC kernels.
 
 """
-from . import adaptive, base, from_mcmc, integrator, nss, utils
+from . import adaptive, base, dynamic_nss, from_mcmc, hamiltonian, integrator, nss, utils
 
 __all__ = [
     "base",
     "adaptive",
     "integrator",
     "nss",
+    "dynamic_nss",
+    "hamiltonian",
     "utils",
     "from_mcmc",
 ]

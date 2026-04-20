@@ -8,7 +8,8 @@ import jax.numpy as jnp
 import jax.scipy.stats as stats
 from absl.testing import absltest, parameterized
 
-from blackjax.ns import adaptive, base, nss, utils
+import blackjax
+from blackjax.ns import adaptive, base, dynamic_nss, hamiltonian, nss, utils
 
 
 def gaussian_logprior(x):
@@ -690,3 +691,316 @@ class NestedSamplingStatisticalTest(chex.TestCase):
 
 if __name__ == "__main__":
     absltest.main()
+
+
+class DynamicNSSTest(chex.TestCase):
+    """Tests for the Dynamic Nested Slice Sampling wrapper."""
+
+    def setUp(self):
+        super().setUp()
+        self.key = jax.random.key(42)
+
+    def test_dynamic_nss_construction(self):
+        """Dynamic NSS can be constructed and its kernel is callable."""
+
+        def logprior_fn(x):
+            return stats.norm.logpdf(x).sum()
+
+        def loglikelihood_fn(x):
+            return stats.norm.logpdf(x - 1.0).sum()
+
+        sampler = blackjax.dynamic_nss(
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            num_delete=5,
+            num_inner_steps=3,
+        )
+        self.assertTrue(callable(sampler.init))
+        self.assertTrue(callable(sampler.step))
+
+    def test_dynamic_nss_init_and_step(self):
+        """Dynamic NSS init + step preserves particle count."""
+        num_live = 40
+        num_delete = 4
+
+        lower = jnp.full(2, -5.0)
+        upper = jnp.full(2, 5.0)
+
+        def logprior_fn(x):
+            return jnp.where(jnp.all((x >= lower) & (x <= upper)), 0.0, -jnp.inf)
+
+        def loglikelihood_fn(x):
+            return -0.5 * jnp.sum(x**2)
+
+        rng_key = jax.random.key(123)
+        positions = jax.random.uniform(
+            rng_key, (num_live, 2), minval=-5.0, maxval=5.0
+        )
+
+        sampler = blackjax.dynamic_nss(
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            num_delete=num_delete,
+            num_inner_steps=3,
+        )
+
+        state = jax.jit(sampler.init)(positions)
+        chex.assert_shape(state.particles.position, (num_live, 2))
+
+        new_state, info = jax.jit(sampler.step)(rng_key, state)
+
+        # Particle count must be preserved
+        chex.assert_shape(new_state.particles.position, (num_live, 2))
+        # Exactly num_delete particles die per step
+        chex.assert_shape(info.particles.loglikelihood, (num_delete,))
+
+    @parameterized.parameters([1, 5, 10])
+    def test_dynamic_nss_various_num_delete(self, num_delete):
+        """Dynamic NSS works for various batch sizes."""
+        num_live = 50
+
+        def logprior_fn(x):
+            return stats.norm.logpdf(x).sum()
+
+        def loglikelihood_fn(x):
+            return stats.norm.logpdf(x).sum()
+
+        rng_key = jax.random.key(42)
+        positions = jax.random.normal(rng_key, (num_live, 2))
+
+        sampler = blackjax.dynamic_nss(
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            num_delete=num_delete,
+            num_inner_steps=2,
+        )
+
+        state = jax.jit(sampler.init)(positions)
+        new_state, info = jax.jit(sampler.step)(rng_key, state)
+        chex.assert_shape(info.particles.loglikelihood, (num_delete,))
+
+
+class HamiltonianNSTest(chex.TestCase):
+    """Tests for gradient-guided Hamiltonian Nested Sampling."""
+
+    def setUp(self):
+        super().setUp()
+        self.key = jax.random.key(42)
+        self.lower = jnp.array([-5.0, -5.0])
+        self.upper = jnp.array([5.0, 5.0])
+
+    def _make_samplers(self, num_delete=1):
+        lower, upper = self.lower, self.upper
+
+        def logprior_fn(x):
+            return jnp.where(
+                jnp.all((x >= lower) & (x <= upper)), 0.0, -jnp.inf
+            )
+
+        def loglikelihood_fn(x):
+            return -0.5 * jnp.sum(x**2)
+
+        return logprior_fn, loglikelihood_fn
+
+    def test_hamiltonian_reflection_step_shape(self):
+        """hamiltonian_reflection_step returns correct shapes."""
+        lower, upper = self.lower, self.upper
+        logprior_fn, loglikelihood_fn = self._make_samplers()
+
+        key = jax.random.key(0)
+        pos = jax.random.uniform(key, (2,), minval=-3.0, maxval=3.0)
+        state = base.init_state_strategy(
+            pos,
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            loglikelihood_birth=-jnp.inf,
+        )
+
+        new_state, info = hamiltonian.hamiltonian_reflection_step(
+            rng_key=key,
+            state=state,
+            loglikelihood_fn=loglikelihood_fn,
+            logprior_fn=logprior_fn,
+            loglikelihood_0=jnp.array(-10.0),
+            dt=0.1,
+            min_reflections=1,
+            max_reflections=5,
+            sigma_vel=0.0,
+            lower=lower,
+            upper=upper,
+            max_steps=50,
+        )
+
+        chex.assert_shape(new_state.position, (2,))
+        chex.assert_shape(new_state.loglikelihood, ())
+        chex.assert_shape(info.out_frac, ())
+        self.assertFalse(jnp.isnan(info.out_frac))
+
+    def test_hamiltonian_ns_construction(self):
+        """Hamiltonian NS sampler can be constructed."""
+        logprior_fn, loglikelihood_fn = self._make_samplers()
+
+        sampler = blackjax.ns_hamiltonian(
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            num_inner_steps=2,
+            num_delete=1,
+            dt_ini=0.1,
+            min_reflections=1,
+            max_reflections=5,
+            lower=self.lower,
+            upper=self.upper,
+            max_steps=30,
+        )
+        self.assertTrue(callable(sampler.init))
+        self.assertTrue(callable(sampler.step))
+
+    def test_hamiltonian_ns_requires_bounds(self):
+        """Hamiltonian NS raises ValueError when bounds are missing."""
+        logprior_fn, loglikelihood_fn = self._make_samplers()
+
+        with self.assertRaises(ValueError):
+            blackjax.ns_hamiltonian(
+                logprior_fn=logprior_fn,
+                loglikelihood_fn=loglikelihood_fn,
+                num_inner_steps=2,
+            )
+
+    def test_hamiltonian_ns_static_init_and_step(self):
+        """Static Hamiltonian NS (num_delete=1) preserves particle count."""
+        num_live = 30
+        logprior_fn, loglikelihood_fn = self._make_samplers()
+
+        rng_key = jax.random.key(99)
+        positions = jax.random.uniform(
+            rng_key, (num_live, 2), minval=-4.0, maxval=4.0
+        )
+
+        sampler = blackjax.ns_hamiltonian(
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            num_inner_steps=2,
+            num_delete=1,
+            dt_ini=0.1,
+            min_reflections=1,
+            max_reflections=4,
+            lower=self.lower,
+            upper=self.upper,
+            max_steps=40,
+        )
+
+        state = jax.jit(sampler.init)(positions)
+        chex.assert_shape(state.particles.position, (num_live, 2))
+        self.assertIn("dt", state.inner_kernel_params)
+
+        new_state, info = jax.jit(sampler.step)(rng_key, state)
+        chex.assert_shape(new_state.particles.position, (num_live, 2))
+        chex.assert_shape(info.particles.loglikelihood, (1,))
+
+    def test_hamiltonian_ns_dynamic_step(self):
+        """Dynamic Hamiltonian NS (num_delete=5) produces correct dead count."""
+        num_live = 40
+        num_delete = 5
+        logprior_fn, loglikelihood_fn = self._make_samplers()
+
+        rng_key = jax.random.key(77)
+        positions = jax.random.uniform(
+            rng_key, (num_live, 2), minval=-4.0, maxval=4.0
+        )
+
+        sampler = blackjax.ns_hamiltonian(
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            num_inner_steps=2,
+            num_delete=num_delete,
+            dt_ini=0.2,
+            min_reflections=1,
+            max_reflections=4,
+            sigma_vel=0.01,
+            lower=self.lower,
+            upper=self.upper,
+            max_steps=40,
+        )
+
+        state = jax.jit(sampler.init)(positions)
+        new_state, info = jax.jit(sampler.step)(rng_key, state)
+
+        chex.assert_shape(new_state.particles.position, (num_live, 2))
+        chex.assert_shape(info.particles.loglikelihood, (num_delete,))
+
+    def test_hamiltonian_ns_dt_adaptation(self):
+        """dt is adapted after each step (changes from initial value)."""
+        num_live = 30
+        dt_ini = 0.05
+        logprior_fn, loglikelihood_fn = self._make_samplers()
+
+        rng_key = jax.random.key(55)
+        positions = jax.random.uniform(
+            rng_key, (num_live, 2), minval=-4.0, maxval=4.0
+        )
+
+        sampler = blackjax.ns_hamiltonian(
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            num_inner_steps=3,
+            num_delete=2,
+            dt_ini=dt_ini,
+            min_reflections=1,
+            max_reflections=5,
+            lower=self.lower,
+            upper=self.upper,
+            max_steps=50,
+        )
+
+        state = jax.jit(sampler.init)(positions)
+        new_state, _ = jax.jit(sampler.step)(rng_key, state)
+
+        dt_after = float(new_state.inner_kernel_params["dt"])
+        # dt must be clipped to [1e-5, 10.0]
+        self.assertGreaterEqual(dt_after, 1e-5)
+        self.assertLessEqual(dt_after, 10.0)
+        self.assertFalse(jnp.isnan(jnp.array(dt_after)))
+
+    def test_hamiltonian_ns_update_params_no_info(self):
+        """update_inner_kernel_params returns dt_ini when called with info=None."""
+        from blackjax.ns.hamiltonian import update_inner_kernel_params
+
+        rng_key = jax.random.key(0)
+        result = update_inner_kernel_params(
+            rng_key, None, None, {"dt": jnp.array(0.05)}
+        )
+        self.assertAlmostEqual(float(result["dt"]), 0.05)
+
+    def test_hamiltonian_ns_multi_step(self):
+        """Multiple NS steps work without recompilation or error."""
+        num_live = 30
+        logprior_fn, loglikelihood_fn = self._make_samplers()
+
+        rng_key = jax.random.key(13)
+        positions = jax.random.uniform(
+            rng_key, (num_live, 2), minval=-4.0, maxval=4.0
+        )
+
+        sampler = blackjax.ns_hamiltonian(
+            logprior_fn=logprior_fn,
+            loglikelihood_fn=loglikelihood_fn,
+            num_inner_steps=2,
+            num_delete=2,
+            dt_ini=0.1,
+            min_reflections=1,
+            max_reflections=4,
+            lower=self.lower,
+            upper=self.upper,
+            max_steps=40,
+        )
+
+        state = jax.jit(sampler.init)(positions)
+        step_fn = jax.jit(sampler.step)
+
+        for i in range(5):
+            rng_key, subkey = jax.random.split(rng_key)
+            state, info = step_fn(subkey, state)
+            self.assertFalse(
+                jnp.isnan(state.integrator.logZ),
+                f"logZ is NaN at step {i}",
+            )

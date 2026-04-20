@@ -33,6 +33,8 @@ from .mcmc.random_walk import (
     rmh_as_top_level_api,
 )
 from .ns import nss as _nss
+from .ns import dynamic_nss as _dynamic_nss
+from .ns import hamiltonian as _ns_hamiltonian
 from .optimizers import dual_averaging, lbfgs
 from .sgmcmc import csgld as _csgld
 from .sgmcmc import sghmc as _sghmc
@@ -148,8 +150,10 @@ smc_family = [
 
 # NS
 nss = generate_top_level_api_from(_nss)
+dynamic_nss = generate_top_level_api_from(_dynamic_nss)
+ns_hamiltonian = generate_top_level_api_from(_ns_hamiltonian)
 
-ns_family = [nss]
+ns_family = [nss, dynamic_nss, ns_hamiltonian]
 
 # stochastic gradient mcmc
 sgld = generate_top_level_api_from(_sgld)
